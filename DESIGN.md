@@ -40,6 +40,5 @@ Ordinary builds compile these observers out. Native status is captured before
 turning a short successful write into io.ErrShortWrite.
 
 Windows and Linux do not require CGo; macOS and BSD retain the upstream CGo
-termios backend. Hardware qualification is platform/device specific. Neither
-successful compilation nor a successful workload proves the earlier intermittent
-Windows zero-byte write has been explained. High-speed tuning is separate work.
+termios backend. Hardware qualification is platform/device specific.
+High-speed tuning is separate work.

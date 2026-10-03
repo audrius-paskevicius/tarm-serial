@@ -27,9 +27,7 @@ automatically replay mutations after an uncertain write.
 [DESIGN.md](DESIGN.md) defines handle ownership, completion, cancellation,
 timeouts and platform differences. This fork fixes Windows event lifetime and
 close coordination and uses Go polling/deadlines on Unix instead of treating
-idle timeout as EOF. It retains one Windows event per direction. This is not a
-claim of higher throughput or proof that a particular Windows USB write failure
-has been fixed.
+idle timeout as EOF. It retains one Windows event per direction.
 
 Windows and Linux build without CGo. macOS and BSD retain the upstream CGo
 termios implementation; BSD has lower validation priority. Windows accepts
