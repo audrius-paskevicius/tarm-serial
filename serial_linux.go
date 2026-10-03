@@ -1,4 +1,4 @@
-// +build linux
+//go:build linux
 
 package serial
 
@@ -12,6 +12,12 @@ import (
 )
 
 func openPort(name string, baud int, databits byte, parity Parity, stopbits StopBits, readTimeout time.Duration) (p *Port, err error) {
+	if parity != ParityNone && parity != ParityOdd && parity != ParityEven {
+		return nil, ErrBadParity
+	}
+	if stopbits != Stop1 && stopbits != Stop2 {
+		return nil, ErrBadStopBits
+	}
 	var bauds = map[int]uint32{
 		50:      unix.B50,
 		75:      unix.B75,
@@ -98,16 +104,18 @@ func openPort(name string, baud int, databits byte, parity Parity, stopbits Stop
 	default:
 		return nil, ErrBadParity
 	}
-	fd := f.Fd()
-	vmin, vtime := posixTimeoutValues(readTimeout)
+	fd, err := descriptor(f)
+	if err != nil {
+		return nil, err
+	}
 	t := unix.Termios{
 		Iflag:  unix.IGNPAR,
 		Cflag:  cflagToUse,
 		Ispeed: rate,
 		Ospeed: rate,
 	}
-	t.Cc[unix.VMIN] = vmin
-	t.Cc[unix.VTIME] = vtime
+	t.Cc[unix.VMIN] = 1
+	t.Cc[unix.VTIME] = 0
 
 	if _, _, errno := unix.Syscall6(
 		unix.SYS_IOCTL,
@@ -121,44 +129,18 @@ func openPort(name string, baud int, databits byte, parity Parity, stopbits Stop
 		return nil, errno
 	}
 
-	if err = unix.SetNonblock(int(fd), false); err != nil {
-		return
+	if err = f.SetReadDeadline(time.Time{}); err != nil {
+		return nil, err
 	}
 
-	return &Port{f: f}, nil
+	return &Port{f: f, readTimeout: readTimeout}, nil
 }
 
-type Port struct {
-	// We intentionly do not use an "embedded" struct so that we
-	// don't export File
-	f *os.File
-}
-
-func (p *Port) Read(b []byte) (n int, err error) {
-	return p.f.Read(b)
-}
-
-func (p *Port) Write(b []byte) (n int, err error) {
-	return p.f.Write(b)
-}
-
-// Discards data written to the port but not transmitted,
-// or data received but not read
-func (p *Port) Flush() error {
+func flush(fd uintptr) error {
 	const TCFLSH = 0x540B
-	_, _, errno := unix.Syscall(
-		unix.SYS_IOCTL,
-		uintptr(p.f.Fd()),
-		uintptr(TCFLSH),
-		uintptr(unix.TCIOFLUSH),
-	)
-
-	if errno == 0 {
-		return nil
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, fd, TCFLSH, unix.TCIOFLUSH)
+	if errno != 0 {
+		return errno
 	}
-	return errno
-}
-
-func (p *Port) Close() (err error) {
-	return p.f.Close()
+	return nil
 }

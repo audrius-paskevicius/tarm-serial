@@ -1,82 +1,42 @@
-[![GoDoc](https://godoc.org/github.com/tarm/serial?status.svg)](http://godoc.org/github.com/tarm/serial)
-[![Build Status](https://travis-ci.org/tarm/serial.svg?branch=master)](https://travis-ci.org/tarm/serial)
+# tarm-serial
 
-Serial
-========
-A Go package to allow you to read and write from the
-serial port as a stream of bytes.
+A maintained fork of [tarm/serial](https://github.com/tarm/serial), by Tarm and contributors. The original [BSD-3-Clause license](LICENSE)
+is retained. The Go package remains named `serial`.
 
-Details
--------
-It aims to have the same API on all platforms, including windows.  As
-an added bonus, the windows package does not use cgo, so you can cross
-compile for windows from another platform.
-
-You can cross compile with
-   GOOS=windows GOARCH=386 go install github.com/tarm/serial
-
-Currently there is very little in the way of configurability.  You can
-set the baud rate.  Then you can Read(), Write(), or Close() the
-connection.  By default Read() will block until at least one byte is
-returned.  Write is the same.
-
-Currently all ports are opened with 8 data bits, 1 stop bit, no
-parity, no hardware flow control, and no software flow control.  This
-works fine for many real devices and many faux serial devices
-including usb-to-serial converters and bluetooth serial ports.
-
-You may Read() and Write() simulantiously on the same connection (from
-different goroutines).
-
-Usage
------
 ```go
-package main
-
 import (
-        "log"
-
-        "github.com/tarm/serial"
+    "time"
+    serial "github.com/audrius-paskevicius/tarm-serial"
 )
 
-func main() {
-        c := &serial.Config{Name: "COM45", Baud: 115200}
-        s, err := serial.OpenPort(c)
-        if err != nil {
-                log.Fatal(err)
-        }
-        
-        n, err := s.Write([]byte("test"))
-        if err != nil {
-                log.Fatal(err)
-        }
-        
-        buf := make([]byte, 128)
-        n, err = s.Read(buf)
-        if err != nil {
-                log.Fatal(err)
-        }
-        log.Printf("%q", buf[:n])
-}
+port, err := serial.OpenPort(&serial.Config{
+    Name: "COM7", Baud: 115200, ReadTimeout: 100 * time.Millisecond,
+})
+if err != nil { return err }
+defer port.Close()
 ```
 
-NonBlocking Mode
-----------------
-By default the returned Port reads in blocking mode. Which means
-`Read()` will block until at least one byte is returned. If that's not
-what you want, specify a positive ReadTimeout and the Read() will
-timeout returning 0 bytes if no bytes are read.  Please note that this
-is the total timeout the read operation will wait and not the interval
-timeout between two bytes.
+Go 1.26 or newer is required. Defaults are eight data bits, no parity, one stop
+bit, and no flow control. Read and Write can run concurrently. Always inspect
+both the byte count and error. Positive ReadTimeout returns `(0, nil)` on expiry;
+zero waits for data. Close interrupts pending I/O. Flush discards queued bytes;
+it does not drain transmission. Applications own protocol recovery and must not
+automatically replay mutations after an uncertain write.
 
-```go
-	c := &serial.Config{Name: "COM45", Baud: 115200, ReadTimeout: time.Second * 5}
-	
-	// In this mode, you will want to suppress error for read
-	// as 0 bytes return EOF error on Linux / POSIX
-	n, _ = s.Read(buf)
-```
+[DESIGN.md](DESIGN.md) defines handle ownership, completion, cancellation,
+timeouts and platform differences. This fork fixes Windows event lifetime and
+close coordination and uses Go polling/deadlines on Unix instead of treating
+idle timeout as EOF. It retains one Windows event per direction. This is not a
+claim of higher throughput or proof that a particular Windows USB write failure
+has been fixed.
 
-Possible Future Work
--------------------- 
-- better tests (loopback etc)
+Windows and Linux build without CGo. macOS and BSD retain the upstream CGo
+termios implementation; BSD has lower validation priority. Windows accepts
+driver-supported baud rates, Linux retains Tarm's rate table, and the CGo backend
+retains its standard rates through 115200. High-speed support and actual reliable
+rates must be qualified separately.
+
+Run `go test ./...` and `go vet ./...`. Build with `-tags=serialdiagnostic` for
+Windows anomaly/lifecycle JSON on stderr; payloads and successful writes are
+not logged. Real-port tests require an explicitly selected `SERIAL_TEST_PORT`
+and exclusive ownership. Tests and compile checks do not replace device testing.

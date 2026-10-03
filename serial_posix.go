@@ -1,4 +1,4 @@
-// +build !windows,!linux,cgo
+//go:build !windows && !linux && cgo
 
 package serial
 
@@ -6,34 +6,43 @@ package serial
 // #include <unistd.h>
 import "C"
 
-// TODO: Maybe change to using syscall package + ioctl instead of cgo
-
 import (
 	"errors"
 	"fmt"
 	"os"
 	"syscall"
 	"time"
-	//"unsafe"
 )
 
 func openPort(name string, baud int, databits byte, parity Parity, stopbits StopBits, readTimeout time.Duration) (p *Port, err error) {
+	if parity != ParityNone && parity != ParityOdd && parity != ParityEven {
+		return nil, ErrBadParity
+	}
+	if stopbits != Stop1 && stopbits != Stop2 {
+		return nil, ErrBadStopBits
+	}
 	f, err := os.OpenFile(name, syscall.O_RDWR|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0666)
 	if err != nil {
 		return
 	}
 
-	fd := C.int(f.Fd())
+	defer func() {
+		if err != nil {
+			f.Close()
+		}
+	}()
+	rawFD, err := descriptor(f)
+	if err != nil {
+		return nil, err
+	}
+	fd := C.int(rawFD)
 	if C.isatty(fd) != 1 {
-		f.Close()
 		return nil, errors.New("File is not a tty")
 	}
 
 	var st C.struct_termios
-	_, err = C.tcgetattr(fd, &st)
-	if err != nil {
-		f.Close()
-		return nil, err
+	if result, callErr := C.tcgetattr(fd, &st); result != 0 {
+		return nil, callErr
 	}
 	var speed C.speed_t
 	switch baud {
@@ -70,26 +79,21 @@ func openPort(name string, baud int, databits byte, parity Parity, stopbits Stop
 	case 50:
 		speed = C.B50
 	default:
-		f.Close()
 		return nil, fmt.Errorf("Unknown baud rate %v", baud)
 	}
 
-	_, err = C.cfsetispeed(&st, speed)
-	if err != nil {
-		f.Close()
-		return nil, err
+	if result, callErr := C.cfsetispeed(&st, speed); result != 0 {
+		return nil, callErr
 	}
-	_, err = C.cfsetospeed(&st, speed)
-	if err != nil {
-		f.Close()
-		return nil, err
+	if result, callErr := C.cfsetospeed(&st, speed); result != 0 {
+		return nil, callErr
 	}
 
 	// Turn off break interrupts, CR->NL, Parity checks, strip, and IXON
 	st.c_iflag &= ^C.tcflag_t(C.BRKINT | C.ICRNL | C.INPCK | C.ISTRIP | C.IXOFF | C.IXON | C.PARMRK)
 
 	// Select local mode, turn off parity, set to 8 bits
-	st.c_cflag &= ^C.tcflag_t(C.CSIZE | C.PARENB)
+	st.c_cflag &= ^C.tcflag_t(C.CSIZE | C.PARENB | C.CSTOPB)
 	st.c_cflag |= (C.CLOCAL | C.CREAD)
 	// databits
 	switch databits {
@@ -130,68 +134,24 @@ func openPort(name string, baud int, databits byte, parity Parity, stopbits Stop
 	st.c_lflag &= ^C.tcflag_t(C.ICANON | C.ECHO | C.ECHOE | C.ISIG)
 	st.c_oflag &= ^C.tcflag_t(C.OPOST)
 
-	// set blocking / non-blocking read
-	/*
-	*	http://man7.org/linux/man-pages/man3/termios.3.html
-	* - Supports blocking read and read with timeout operations
-	 */
-	vmin, vtime := posixTimeoutValues(readTimeout)
-	st.c_cc[C.VMIN] = C.cc_t(vmin)
-	st.c_cc[C.VTIME] = C.cc_t(vtime)
+	// Keep the descriptor nonblocking for Go's file poller.
+	st.c_cc[C.VMIN] = 1
+	st.c_cc[C.VTIME] = 0
 
-	_, err = C.tcsetattr(fd, C.TCSANOW, &st)
-	if err != nil {
-		f.Close()
+	if result, callErr := C.tcsetattr(fd, C.TCSANOW, &st); result != 0 {
+		return nil, callErr
+	}
+
+	if err = f.SetReadDeadline(time.Time{}); err != nil {
 		return nil, err
 	}
 
-	//fmt.Println("Tweaking", name)
-	r1, _, e := syscall.Syscall(syscall.SYS_FCNTL,
-		uintptr(f.Fd()),
-		uintptr(syscall.F_SETFL),
-		uintptr(0))
-	if e != 0 || r1 != 0 {
-		s := fmt.Sprint("Clearing NONBLOCK syscall error:", e, r1)
-		f.Close()
-		return nil, errors.New(s)
+	return &Port{f: f, readTimeout: readTimeout}, nil
+}
+
+func flush(fd uintptr) error {
+	if result, err := C.tcflush(C.int(fd), C.TCIOFLUSH); result != 0 {
+		return err
 	}
-
-	/*
-				r1, _, e = syscall.Syscall(syscall.SYS_IOCTL,
-			                uintptr(f.Fd()),
-			                uintptr(0x80045402), // IOSSIOSPEED
-			                uintptr(unsafe.Pointer(&baud)));
-			        if e != 0 || r1 != 0 {
-			                s := fmt.Sprint("Baudrate syscall error:", e, r1)
-					f.Close()
-		                        return nil, os.NewError(s)
-				}
-	*/
-
-	return &Port{f: f}, nil
-}
-
-type Port struct {
-	// We intentionly do not use an "embedded" struct so that we
-	// don't export File
-	f *os.File
-}
-
-func (p *Port) Read(b []byte) (n int, err error) {
-	return p.f.Read(b)
-}
-
-func (p *Port) Write(b []byte) (n int, err error) {
-	return p.f.Write(b)
-}
-
-// Discards data written to the port but not transmitted,
-// or data received but not read
-func (p *Port) Flush() error {
-	_, err := C.tcflush(C.int(p.f.Fd()), C.TCIOFLUSH)
-	return err
-}
-
-func (p *Port) Close() (err error) {
-	return p.f.Close()
+	return nil
 }

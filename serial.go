@@ -1,62 +1,11 @@
-/*
-Goserial is a simple go package to allow you to read and write from
-the serial port as a stream of bytes.
-
-It aims to have the same API on all platforms, including windows.  As
-an added bonus, the windows package does not use cgo, so you can cross
-compile for windows from another platform.  Unfortunately goinstall
-does not currently let you cross compile so you will have to do it
-manually:
-
- GOOS=windows make clean install
-
-Currently there is very little in the way of configurability.  You can
-set the baud rate.  Then you can Read(), Write(), or Close() the
-connection.  Read() will block until at least one byte is returned.
-Write is the same.  There is currently no exposed way to set the
-timeouts, though patches are welcome.
-
-Currently all ports are opened with 8 data bits, 1 stop bit, no
-parity, no hardware flow control, and no software flow control.  This
-works fine for many real devices and many faux serial devices
-including usb-to-serial converters and bluetooth serial ports.
-
-You may Read() and Write() simulantiously on the same connection (from
-different goroutines).
-
-Example usage:
-
-  package main
-
-  import (
-        "github.com/tarm/serial"
-        "log"
-  )
-
-  func main() {
-        c := &serial.Config{Name: "COM5", Baud: 115200}
-        s, err := serial.OpenPort(c)
-        if err != nil {
-                log.Fatal(err)
-        }
-
-        n, err := s.Write([]byte("test"))
-        if err != nil {
-                log.Fatal(err)
-        }
-
-        buf := make([]byte, 128)
-        n, err = s.Read(buf)
-        if err != nil {
-                log.Fatal(err)
-        }
-        log.Print("%q", buf[:n])
-  }
-*/
+// Package serial provides byte-stream serial ports. This is a maintained fork of
+// github.com/tarm/serial; see README.md and DESIGN.md for platform semantics.
 package serial
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -87,17 +36,18 @@ const (
 //
 // For example:
 //
-//    c0 := &serial.Config{Name: "COM45", Baud: 115200, ReadTimeout: time.Millisecond * 500}
-// or
-//    c1 := new(serial.Config)
-//    c1.Name = "/dev/tty.usbserial"
-//    c1.Baud = 115200
-//    c1.ReadTimeout = time.Millisecond * 500
+//	c0 := &serial.Config{Name: "COM45", Baud: 115200, ReadTimeout: time.Millisecond * 500}
 //
+// or
+//
+//	c1 := new(serial.Config)
+//	c1.Name = "/dev/tty.usbserial"
+//	c1.Baud = 115200
+//	c1.ReadTimeout = time.Millisecond * 500
 type Config struct {
 	Name        string
 	Baud        int
-	ReadTimeout time.Duration // Total timeout
+	ReadTimeout time.Duration // Idle read timeout; zero waits for data, positive expiry returns (0, nil).
 
 	// Size is the number of data bits. If 0, DefaultSize is used.
 	Size byte
@@ -107,12 +57,6 @@ type Config struct {
 
 	// Number of stop bits to use. Default is 1 (1 stop bit).
 	StopBits StopBits
-
-	// RTSFlowControl bool
-	// DTRFlowControl bool
-	// XONFlowControl bool
-
-	// CRLFTranslate bool
 }
 
 // ErrBadSize is returned if Size is not supported.
@@ -126,6 +70,18 @@ var ErrBadParity error = errors.New("unsupported parity setting")
 
 // OpenPort opens a serial port with the specified configuration
 func OpenPort(c *Config) (*Port, error) {
+	if c == nil {
+		return nil, fmt.Errorf("nil serial configuration")
+	}
+	if c.Name == "" || strings.ContainsRune(c.Name, 0) {
+		return nil, fmt.Errorf("invalid serial port name")
+	}
+	if c.Baud <= 0 || uint64(c.Baud) > 1<<32-1 {
+		return nil, fmt.Errorf("invalid baud rate: %d", c.Baud)
+	}
+	if c.ReadTimeout < 0 {
+		return nil, fmt.Errorf("negative read timeout")
+	}
 	size, par, stop := c.Size, c.Parity, c.StopBits
 	if size == 0 {
 		size = DefaultSize
@@ -136,32 +92,18 @@ func OpenPort(c *Config) (*Port, error) {
 	if stop == 0 {
 		stop = Stop1
 	}
+	if size < 5 || size > 8 {
+		return nil, ErrBadSize
+	}
+	switch par {
+	case ParityNone, ParityOdd, ParityEven, ParityMark, ParitySpace:
+	default:
+		return nil, ErrBadParity
+	}
+	switch stop {
+	case Stop1, Stop1Half, Stop2:
+	default:
+		return nil, ErrBadStopBits
+	}
 	return openPort(c.Name, c.Baud, size, par, stop, c.ReadTimeout)
 }
-
-// Converts the timeout values for Linux / POSIX systems
-func posixTimeoutValues(readTimeout time.Duration) (vmin uint8, vtime uint8) {
-	const MAXUINT8 = 1<<8 - 1 // 255
-	// set blocking / non-blocking read
-	var minBytesToRead uint8 = 1
-	var readTimeoutInDeci int64
-	if readTimeout > 0 {
-		// EOF on zero read
-		minBytesToRead = 0
-		// convert timeout to deciseconds as expected by VTIME
-		readTimeoutInDeci = (readTimeout.Nanoseconds() / 1e6 / 100)
-		// capping the timeout
-		if readTimeoutInDeci < 1 {
-			// min possible timeout 1 Deciseconds (0.1s)
-			readTimeoutInDeci = 1
-		} else if readTimeoutInDeci > MAXUINT8 {
-			// max possible timeout is 255 deciseconds (25.5s)
-			readTimeoutInDeci = MAXUINT8
-		}
-	}
-	return minBytesToRead, uint8(readTimeoutInDeci)
-}
-
-// func SendBreak()
-
-// func RegisterBreakHandler(func())
