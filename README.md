@@ -1,7 +1,8 @@
 # tarm-serial
 
-A maintained fork of [tarm/serial](https://github.com/tarm/serial), by Tarm and contributors. The original [BSD-3-Clause license](LICENSE)
-is retained. The Go package remains named `serial`.
+A fork of [tarm/serial](https://github.com/tarm/serial), by Tarm and contributors.
+The original [BSD-3-Clause license](LICENSE) is retained. The Go package remains
+named `serial`.
 
 ```go
 import (
