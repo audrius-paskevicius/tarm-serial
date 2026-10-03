@@ -16,3 +16,18 @@ jobs:
       - run: go test -race -timeout 60s ./...
       - run: go test -tags=serialdiagnostic -timeout 60s ./...
       - run: go vet ./...
+      - name: Unix pseudo-terminal timeout and close
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pty, subprocess
+          master, slave = pty.openpty()
+          try:
+              environment = dict(os.environ, SERIAL_TEST_PORT=os.ttyname(slave))
+              subprocess.run(['go', 'test', '-race', '-run', 'TestHardwareIdleClose',
+                              '-v', '-timeout', '30s'], env=environment, check=True, timeout=60)
+          finally:
+              os.close(slave)
+              os.close(master)
+          PY
